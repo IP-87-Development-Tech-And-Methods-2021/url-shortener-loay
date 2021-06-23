@@ -1,59 +1,74 @@
-import ujson as json
+import os
 
-from url_shortener.views import setup_routes
-from url_shortener.config import Config
+from threading import Lock
+from typing import Dict, Optional
 
-from url_shortener.storage import InMemoryStorage
-from url_shortener.logic import Logic
-from url_shortener.auth import TokenAuthenticationPolicy
+from tinydb import TinyDB, Query
 
-from pyramid.config import Configurator
-from pyramid.authorization import ACLAuthorizationPolicy
-from pyramid.renderers import JSON
+class PermanentStorage():
+    def __init__(self, filename_users='users.json'):
+        dirname = os.path.join(os.path.dirname(__file__), 'db/')
+        filepath_users = os.path.join(dirname, filename_users)
+        self.filepath_users = filepath_users
+        self._write_lock: Lock = Lock()
+        self.users = TinyDB(filepath_users)
+        self.User = Query()
+
+    def get_user_data(self, email: str):
+        try:
+            user_data = self.users.search(self.User.email == email)[0]
+        except:
+            return None
+
+        return user_data
+
+    def add_user(self, email: str, password):
+        with self._write_lock:
+            self._write_lock: Lock = Lock()
+            self.users.insert({"email": email, "password": password, "url_list": {}})
+
+    def remove_user(self, email: str):
+        with self._write_lock:
+            self.users.remove(self.User.email == email)
+
+    # Maybe clean this up
+    def get_all_urls(self):
+        url_dict_list = [user.get('url_list') for user in self.users.search(self.User.url_list.exists())]
+        url_dict = {}
+        for document in url_dict_list:
+            url_dict.update(document)
+        return url_dict
+
+    def get_user_urls(self, email: str, url_short: str):
+        user_data = self.users.search(self.User.email == email)
+        return user_data.url_list
+
+    def add_url(self, email: str, url_short: str, url_orig):
+        with self._write_lock:
+            user_data = self.users.search(self.User.email == email)[0]
+            user_data['url_list'][url_short] = url_orig
+            self.users.update({"url_list": user_data['url_list']}, self.User.email == email)
+
+    def remove_url(self, email: str, url_short: str):
+        with self._write_lock:
+            user_data = self.users.search(self.User.email == email)[0]
+            user_data['url_list'].pop("url_short", None)
 
 
-class UJSONRenderer(JSON):
-    """Custom JSON Renderer for greater performance. You do not need to edit it"""
-    def __init__(self, adapters=(), **kw):
-        super().__init__(serializer=json.dumps, adapters=adapters, **kw)
+class InMemoryStorage():
+    """ Simple in-memory implementation of key-value storage.
+    Note, how it is inherited from abstract `Storage` class
+    and implements all its abstract methods. This is done this way
+    in order to make some guarantees regarding class public API
+    """
 
-    def __call__(self, info):
-        """Returns a plain JSON-encoded string with content-type
-        ``application/json``. The content-type may be overridden by
-        setting ``request.response.content_type``."""
+    def __init__(self):
+        self._write_lock: Lock = Lock()
+        self._data: Dict[str, str] = {}
 
-        def _render(value, system):
-            request = system.get('request')
-            if request is not None:
-                response = request.response
-                ct = response.content_type
-                if ct == response.default_content_type:
-                    response.content_type = 'application/json'
-            return self.serializer(value, **self.kw)
+    def read(self, key: str) -> Optional[str]:
+        return self._data.get(key)
 
-        return _render
-
-
-def make_app(app_config: Config):
-    """ This function creates application instance from app_config given"""
-    config = Configurator()
-
-    # replacing standard renderer with faster one
-    config.add_renderer('json', UJSONRenderer())
-
-    # configure endpoints in the application
-    setup_routes(config)
-
-    # setup "global" objects into the registry
-    storage = InMemoryStorage()
-
-    config.registry.base_url: str = app_config.base_url
-    config.registry.logic = Logic(storage=storage)
-
-    # Setup authentication and authorization from `.auth` module
-    config.set_authentication_policy(TokenAuthenticationPolicy())
-    config.set_authorization_policy(ACLAuthorizationPolicy())
-
-    # create app
-    app = config.make_wsgi_app()
-    return app
+    def write(self, key: str, value: str):
+        with self._write_lock:
+            self._data[key] = value
