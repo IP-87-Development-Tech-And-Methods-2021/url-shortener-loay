@@ -26,6 +26,11 @@ _CONFIG_VALIDATOR = t.Dict(
               default="http://127.0.0.1:6543",
               to_name='base_url'):
         t.URL,
+        t.Key('USER_DB',
+              optional=True,
+              default="users.json",
+              to_name='user_db'):
+        t.String,
     },
     ignore_extra='*')
 
@@ -33,12 +38,13 @@ _CONFIG_VALIDATOR = t.Dict(
 class Config(NamedTuple):
     base_url: str
     port: int
+    user_db: str
 
 
-def load_config() -> Config:
+def load_config(app_config) -> Config:
     try:
-        config_dict = _CONFIG_VALIDATOR.check(os.environ)
-        return Config(**config_dict)
+        app_config_validated = _CONFIG_VALIDATOR.check(app_config)
+        return Config(**app_config_validated)
     except t.DataError as e:
         log.exception('Invalid configuration. Errors: %s', e.as_dict())
         sys.exit(os.EX_CONFIG)
